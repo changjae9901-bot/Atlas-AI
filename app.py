@@ -34,9 +34,9 @@ CLEAR_USER_DATA_AFTER_SUCCESS = os.getenv("CLEAR_USER_DATA_AFTER_SUCCESS", "1") 
 
 
 def ensure_storage() -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    LOCAL_TESSDATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_TESSDATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
