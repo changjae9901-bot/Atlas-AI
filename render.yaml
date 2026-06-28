@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: atlas-stock-mailer
+    env: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    healthCheckPath: /healthz
+    envVars:
+      - key: ATLAS_DATA_DIR
+        value: /var/data
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: CLEAR_USER_DATA_AFTER_SUCCESS
+        value: "1"
+      - key: MARKET_CACHE_HOURS
+        value: "20"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: ALPHA_VANTAGE_KEY
+        sync: false
+    disk:
+      name: atlas-data
+      mountPath: /var/data
+      sizeGB: 1
