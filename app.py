@@ -318,8 +318,15 @@ TICKER_LOOKUP = {
     "GOOG": ("Alphabet Class C", "USD"),
     "AMZN": ("Amazon", "USD"),
     "META": ("Meta Platforms", "USD"),
+    "PLTR": ("Palantir Technologies", "USD"),
+    "AVGO": ("Broadcom", "USD"),
+    "SMCI": ("Super Micro Computer", "USD"),
+    "NFLX": ("Netflix", "USD"),
+    "BRK-B": ("Berkshire Hathaway Class B", "USD"),
     "QQQ": ("Invesco QQQ Trust", "USD"),
     "SPY": ("SPDR S&P 500 ETF", "USD"),
+    "DIA": ("SPDR Dow Jones Industrial Average ETF", "USD"),
+    "EWY": ("iShares MSCI South Korea ETF", "USD"),
     "SOXL": ("Direxion Daily Semiconductor Bull 3X Shares", "USD"),
     "SOXX": ("iShares Semiconductor ETF", "USD"),
     "TQQQ": ("ProShares UltraPro QQQ", "USD"),
@@ -352,8 +359,43 @@ def normalize_ticker(value: str) -> str:
 
 def lookup_ticker(value: str) -> dict[str, str]:
     ticker = normalize_ticker(value)
-    name, currency = TICKER_LOOKUP.get(ticker, (ticker, "KRW" if ticker.endswith(".KS") else "USD"))
+    cached = cache_get(f"profile:{ticker}", max_age_hours=24 * 14)
+    if isinstance(cached, dict) and cached.get("name"):
+        return {
+            "ticker": ticker,
+            "name": str(cached["name"]),
+            "currency": str(cached.get("currency") or ("KRW" if ticker.endswith(".KS") else "USD")),
+        }
+    if ticker in TICKER_LOOKUP:
+        name, currency = TICKER_LOOKUP[ticker]
+        cache_set(f"profile:{ticker}", {"name": name, "currency": currency})
+        return {"ticker": ticker, "name": name, "currency": currency}
+    name, currency = lookup_ticker_via_yfinance(ticker)
     return {"ticker": ticker, "name": name, "currency": currency}
+
+
+def lookup_ticker_via_yfinance(ticker: str) -> tuple[str, str]:
+    default_currency = "KRW" if ticker.endswith(".KS") else "USD"
+    if not yfinance_available():
+        return ticker, default_currency
+    try:
+        import yfinance as yf
+
+        info = yf.Ticker(ticker).get_info()
+        name = (
+            info.get("shortName")
+            or info.get("longName")
+            or info.get("displayName")
+            or ticker
+        )
+        currency = info.get("currency") or info.get("financialCurrency") or default_currency
+        if ticker.endswith(".KS"):
+            currency = "KRW"
+        payload = {"name": str(name), "currency": str(currency)}
+        cache_set(f"profile:{ticker}", payload)
+        return payload["name"], payload["currency"]
+    except Exception:
+        return ticker, default_currency
 
 
 def display_name_for_row(row: sqlite3.Row) -> str:
@@ -361,7 +403,7 @@ def display_name_for_row(row: sqlite3.Row) -> str:
     name = (row["name"] or "").strip()
     if name and name != ticker:
         return name
-    return TICKER_LOOKUP.get(ticker, (ticker, ""))[0]
+    return lookup_ticker(ticker)["name"]
 
 
 def uploads() -> list[sqlite3.Row]:
@@ -389,6 +431,8 @@ COMMON_STOCKS = {
     "마이크로소프트": "MSFT",
     "TESLA": "TSLA",
     "테슬라": "TSLA",
+    "PALANTIR": "PLTR",
+    "팔란티어": "PLTR",
     "AMD": "AMD",
     "QQQ": "QQQ",
     "SOXL": "SOXL",
@@ -786,10 +830,64 @@ def related_portfolio_names(signal_key: str, items: list[dict[str, object]]) -> 
     return ", ".join(str(item["name"]) for item in related[:3])
 
 
+def snapshot_metric(symbol: str, label: str, snapshots: dict[str, dict[str, str]], currency: str = "USD") -> str:
+    snapshot = snapshots.get(symbol, {})
+    if snapshot.get("status") != "ok":
+        return f"<span>{escape(label)}: 데이터 대기</span>"
+    price = fmt_price_by_currency(price_from_snapshot(snapshot), currency)
+    change = fmt_change_percent(snapshot.get("change_percent"))
+    day = snapshot.get("latest_day") or ""
+    return f"<span>{escape(label)} <b>{escape(price)}</b> <em>{escape(change)}</em> {escape(day)}</span>"
+
+
+def signal_metrics_html(signal_key: str, snapshots: dict[str, dict[str, str]], fx_html: str) -> str:
+    groups = {
+        "rates": [
+            ("^TNX", "미국 10년물", ""),
+            ("DX-Y.NYB", "달러지수", ""),
+            ("QQQ", "나스닥", "USD"),
+        ],
+        "ai_semis": [
+            ("SOXX", "반도체 ETF", "USD"),
+            ("QQQ", "나스닥", "USD"),
+            ("NVDA", "NVIDIA", "USD"),
+        ],
+        "korea": [
+            ("EWY", "한국 ETF", "USD"),
+            ("USDKRW=X", "원/달러", "KRW"),
+            ("QQQ", "나스닥", "USD"),
+        ],
+        "etf_flow": [
+            ("^VIX", "VIX", ""),
+            ("QQQ", "나스닥", "USD"),
+            ("SPY", "S&P500", "USD"),
+        ],
+        "market": [
+            ("SPY", "S&P500", "USD"),
+            ("QQQ", "나스닥", "USD"),
+            ("^VIX", "VIX", ""),
+        ],
+        "general": [
+            ("SPY", "S&P500", "USD"),
+            ("QQQ", "나스닥", "USD"),
+            ("EWY", "한국 ETF", "USD"),
+        ],
+    }
+    metrics = [
+        snapshot_metric(symbol, label, snapshots, currency)
+        for symbol, label, currency in groups.get(signal_key, groups["general"])
+    ]
+    if signal_key in {"rates", "korea"}:
+        metrics.append(f"<span>{escape(fx_html)}</span>")
+    return "<div class='signal-metrics'>" + "".join(metrics) + "</div>"
+
+
 def build_research_strategy_html(
     news_records: list[dict[str, str]],
     analysis_items: list[dict[str, object]],
     action_summary: str,
+    market_context: dict[str, dict[str, str]],
+    fx_html: str,
 ) -> str:
     grouped: dict[str, dict[str, object]] = {}
     for record in news_records:
@@ -805,6 +903,7 @@ def build_research_strategy_html(
             "<article class='insight-card'>"
             "<div class='insight-head'><span>Strategy Agent</span><strong>뉴스 데이터 대기</strong></div>"
             f"<p>{escape(action_summary)}</p>"
+            f"{signal_metrics_html('general', market_context, fx_html)}"
             "<div class='insight-action'>오늘의 대응: 보유 비중과 현금 여력을 우선 점검합니다.</div>"
             "</article></div>"
         )
@@ -825,6 +924,7 @@ def build_research_strategy_html(
             "<div class='insight-head'>"
             f"<span>Research Signal</span><strong>{escape(signal['label'])}</strong>"
             "</div>"
+            f"{signal_metrics_html(str(signal['key']), market_context, fx_html)}"
             f"<p>{escape(signal['thesis'])}</p>"
             "<div class='insight-impact'>"
             "<span>내 포트폴리오 영향</span>"
@@ -902,7 +1002,7 @@ def concentration_note_from_items(items: list[dict[str, object]], total_value_kr
     values = [(str(item["name"]), value_for_weight(item)) for item in items]
     total = total_value_krw if total_value_krw is not None else sum(value for _, value in values)
     if total <= 0:
-        return "수량, 평균단가 또는 현재가를 입력하면 종목 집중도를 계산할 수 있습니다."
+        return "수량과 평균단가를 입력하면 최근 종가 기준으로 종목 집중도를 계산할 수 있습니다."
     top_name, top_value = max(values, key=lambda item: item[1])
     ratio = top_value / total * 100
     if ratio >= 50:
@@ -1124,7 +1224,13 @@ def build_report_html() -> str:
         ticker: fetch_market_snapshot(ticker, api_key)
         for ticker in unique_tickers[:8]
     }
+    macro_tickers = ["SPY", "QQQ", "DIA", "EWY", "SOXX", "NVDA", "^VIX", "^TNX", "DX-Y.NYB"]
+    market_context = {
+        ticker: fetch_market_snapshot(ticker, api_key)
+        for ticker in macro_tickers
+    }
     fx_snapshot = fetch_exchange_rate()
+    market_context["USDKRW=X"] = fx_snapshot
     usd_krw = price_from_snapshot(fx_snapshot)
     cash_krw = parse_float(settings.get("cash_krw", "0")) or 0
     cash_usd = parse_float(settings.get("cash_usd", "0")) or 0
@@ -1159,7 +1265,7 @@ def build_report_html() -> str:
     for row in stock_rows:
         display_name = display_name_for_row(row)
         snapshot = market_snapshots.get(row["ticker"], {"status": "skipped", "message": "시세 조회 대상에서 제외되었습니다."})
-        current_price = price_from_snapshot(snapshot) or as_float(row["current_price"])
+        current_price = price_from_snapshot(snapshot)
         quantity = as_float(row["quantity"])
         avg_price = as_float(row["avg_price"])
         currency = row["currency"] or "KRW"
@@ -1225,6 +1331,7 @@ def build_report_html() -> str:
     holding_items = []
     for item in analysis_items:
         item_weight = value_for_weight(item) / total_asset_value * 100 if total_asset_value else None
+        item["weight_pct"] = item_weight
         holding_items.append(
             "<tr>"
             f"<td><span class='ticker'>{escape(item['ticker'])}</span></td>"
@@ -1319,20 +1426,47 @@ def build_report_html() -> str:
         for item in analysis_items[:8]
     ) or "<tr><td colspan='4'>보유 종목을 입력하면 영향도를 계산합니다.</td></tr>"
 
-    reduce_candidates = [item for item in analysis_items if "축소" in str(item["recommendation"]) or "손실 제한" in str(item["recommendation"])]
-    profit_candidates = [item for item in analysis_items if item["return_pct"] is not None and item["return_pct"] >= 20]
+    reduce_candidates = sorted(
+        [item for item in analysis_items if "축소" in str(item["recommendation"]) or "손실 제한" in str(item["recommendation"])],
+        key=value_for_weight,
+        reverse=True,
+    )
+    profit_candidates = sorted(
+        [item for item in analysis_items if item["return_pct"] is not None and item["return_pct"] >= 20],
+        key=lambda item: as_float(item.get("return_pct")) or 0,
+        reverse=True,
+    )
     hold_candidates = [item for item in analysis_items if item not in reduce_candidates and item not in profit_candidates]
     action_items = []
+    if top_bucket_ratio >= 55:
+        action_items.append(
+            f"<li><strong>{escape(top_bucket)} 편중 관리</strong>: 총자산 대비 {top_bucket_ratio:.1f}% 노출입니다. 신규 매수는 보류하고 목표 노출을 55% 이하로 낮추는 리밸런싱을 우선 검토합니다.</li>"
+        )
+    if cash_ratio < 5 and total_asset_value:
+        target_cash = total_asset_value * 0.1
+        shortage = max(target_cash - cash_value_krw, 0)
+        action_items.append(
+            f"<li><strong>현금 방어력 보강</strong>: 현금 비중 {cash_ratio:.1f}%로 낮습니다. 변동성 대응을 위해 약 {fmt_krw(shortage)}를 현금으로 확보하면 10% 수준에 접근합니다.</li>"
+        )
     if reduce_candidates:
         item = reduce_candidates[0]
-        action_items.append(f"<li><strong>{escape(item['name'])}</strong>: 비중 확대 금지, 손실 제한선 재확인 <span class='confidence'>신뢰도 {item['confidence']}%</span></li>")
+        action_items.append(
+            f"<li><strong>{escape(item['name'])}</strong>: 비중 {fmt_percent(as_float(item.get('weight_pct')))} · 수익률 {fmt_percent(as_float(item.get('return_pct')))}입니다. 레버리지/인버스 리스크가 있어 추가 매수보다 손실 제한선과 목표 비중을 먼저 정합니다. <span class='confidence'>신뢰도 {item['confidence']}%</span></li>"
+        )
     if profit_candidates:
         item = profit_candidates[0]
-        action_items.append(f"<li><strong>{escape(item['name'])}</strong>: 일부 이익실현 기준 검토 <span class='confidence'>신뢰도 {item['confidence']}%</span></li>")
+        action_items.append(
+            f"<li><strong>{escape(item['name'])}</strong>: 수익률 {fmt_percent(as_float(item.get('return_pct')))} 구간입니다. 평가금액 {fmt_krw(as_float(item.get('valuation_krw')))} 기준으로 일부 이익실현 또는 추적 손절선을 검토합니다. <span class='confidence'>신뢰도 {item['confidence']}%</span></li>"
+        )
     if hold_candidates:
-        item = hold_candidates[0]
-        action_items.append(f"<li><strong>{escape(item['name'])}</strong>: 신규 매수보다 관찰 유지 <span class='confidence'>신뢰도 {item['confidence']}%</span></li>")
-    action_items.append("<li><strong>현금</strong>: 변동성 확대에 대비해 최소 10% 현금 여력 유지</li>")
+        item = max(hold_candidates, key=value_for_weight)
+        action_items.append(
+            f"<li><strong>{escape(item['name'])}</strong>: 비중 {fmt_percent(as_float(item.get('weight_pct')))} · 최근 종가 {fmt_price_by_currency(as_float(item.get('current_price')), str(item.get('currency')))}입니다. 현재는 신규 매수보다 보유와 가격 확인을 우선합니다. <span class='confidence'>신뢰도 {item['confidence']}%</span></li>"
+        )
+    if cash_ratio >= 5:
+        action_items.append(f"<li><strong>현금</strong>: 현재 현금 비중 {cash_ratio:.1f}%입니다. 급락 대응 여력은 유지하되 35%를 넘으면 기회비용도 함께 점검합니다.</li>")
+    if not action_items:
+        action_items.append("<li><strong>입력 대기</strong>: 보유 종목, 평균단가, 수량을 입력하면 수치 기반 Action Plan을 생성합니다.</li>")
     action_plan_html = "\n".join(action_items[:4])
 
     agent_cards_html = f"""
@@ -1413,7 +1547,7 @@ def build_report_html() -> str:
     market_html = "\n".join(market_rows) or (
         "<tr><td colspan='4'>보유 종목이 없거나 시세 데이터 연동이 아직 설정되지 않았습니다.</td></tr>"
     )
-    research_strategy_html = build_research_strategy_html(news_records, analysis_items, action_summary)
+    research_strategy_html = build_research_strategy_html(news_records, analysis_items, action_summary, market_context, fx_html)
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -1464,6 +1598,10 @@ def build_report_html() -> str:
     .insight-head {{ padding: 10px 12px; background: #eef2ff; border-bottom: 1px solid #c7d2fe; }}
     .insight-head span {{ display: block; color: #4f46e5; font-size: 11px; font-weight: 700; margin-bottom: 3px; }}
     .insight-head strong {{ color: #111827; font-size: 15px; }}
+    .signal-metrics {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 12px; }}
+    .signal-metrics span {{ display: block; border: 1px solid #e5e7eb; border-radius: 7px; padding: 7px; background: #ffffff; color: #475569; font-size: 11px; }}
+    .signal-metrics b {{ display: block; color: #111827; font-size: 13px; }}
+    .signal-metrics em {{ display: inline-block; color: #2563eb; font-style: normal; font-weight: 700; }}
     .insight-card p {{ margin: 10px 12px; }}
     .insight-impact {{ margin: 10px 12px; padding: 9px; border-radius: 7px; background: #ffffff; border: 1px solid #e5e7eb; }}
     .insight-impact span {{ display: block; color: #64748b; font-size: 11px; margin-bottom: 4px; }}
@@ -1483,7 +1621,7 @@ def build_report_html() -> str:
     .diary-grid b {{ display: block; color: #111827; margin-bottom: 5px; }}
     .diary-grid small {{ display: block; color: #475569; line-height: 1.4; }}
     @media (max-width: 820px) {{
-      .summary-grid, .agent-grid, .two-col, .insight-board, .diary-list, .diary-grid, .method-grid {{ grid-template-columns: 1fr; }}
+      .summary-grid, .agent-grid, .two-col, .insight-board, .diary-list, .diary-grid, .method-grid, .signal-metrics {{ grid-template-columns: 1fr; }}
       .diary-grid div {{ border-right: 0; border-bottom: 1px solid #e5e7eb; }}
       .diary-grid div:last-child {{ border-bottom: 0; }}
     }}
@@ -1536,7 +1674,7 @@ def build_report_html() -> str:
           <th>종목명</th>
           <th>수량</th>
           <th>평균단가</th>
-          <th>현재가</th>
+          <th>최근 종가</th>
           <th>수익률</th>
           <th>비중</th>
           <th>평가금액 USD</th>
@@ -1556,7 +1694,7 @@ def build_report_html() -> str:
       <thead>
         <tr>
           <th>티커</th>
-          <th>가격</th>
+          <th>최근 종가</th>
           <th>등락률</th>
           <th>기준일</th>
         </tr>
@@ -1686,12 +1824,13 @@ def clean_money_input(value: str) -> str:
     return "" if parsed is None else str(parsed)
 
 
-def clear_user_entered_data() -> None:
+def clear_user_entered_data(include_diary: bool = True) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM holdings")
         conn.execute("DELETE FROM uploads")
-        conn.execute("DELETE FROM investment_diary")
-        conn.execute("DELETE FROM send_log")
+        if include_diary:
+            conn.execute("DELETE FROM investment_diary")
+            conn.execute("DELETE FROM send_log")
         conn.execute(
             "DELETE FROM settings WHERE key IN ('recipient_email', 'send_time', 'user_name', 'cash_krw', 'cash_usd')"
         )
@@ -1862,7 +2001,7 @@ class Handler(BaseHTTPRequestHandler):
                     name,
                     parse_float(form.get("quantity", [""])[0]),
                     parse_float(form.get("avg_price", [""])[0]),
-                    parse_float(form.get("current_price", [""])[0]),
+                    None,
                     currency,
                     form.get("memo", [""])[0].strip(),
                     now_text(),
@@ -1879,7 +2018,7 @@ class Handler(BaseHTTPRequestHandler):
             db_execute(
                 """
                 UPDATE holdings
-                SET ticker = ?, name = ?, quantity = ?, avg_price = ?, current_price = ?, currency = ?, memo = ?
+                SET ticker = ?, name = ?, quantity = ?, avg_price = ?, current_price = NULL, currency = ?, memo = ?
                 WHERE id = ?
                 """,
                 (
@@ -1887,7 +2026,6 @@ class Handler(BaseHTTPRequestHandler):
                     name,
                     parse_float(form.get("quantity", [""])[0]),
                     parse_float(form.get("avg_price", [""])[0]),
-                    parse_float(form.get("current_price", [""])[0]),
                     currency,
                     form.get("memo", [""])[0].strip(),
                     holding_id,
@@ -1902,7 +2040,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond_redirect("/")
             return
         if parsed.path == "/clear-user-data":
-            clear_user_entered_data()
+            clear_user_entered_data(include_diary=True)
             if PREVIEW_PATH.exists():
                 PREVIEW_PATH.unlink()
             self.respond_redirect("/")
@@ -1938,7 +2076,7 @@ class Handler(BaseHTTPRequestHandler):
             cleanup_message = ""
             preview_link = "<a class='button secondary' href='/email_preview.html'>미리보기 열기</a>"
             if ok and CLEAR_USER_DATA_AFTER_SUCCESS:
-                clear_user_entered_data()
+                clear_user_entered_data(include_diary=False)
                 if PREVIEW_PATH.exists():
                     PREVIEW_PATH.unlink()
                 cleanup_message = "<p class='muted'>개인정보 보호를 위해 입력한 이메일과 보유 종목은 발송 후 초기화했습니다.</p>"
@@ -1998,13 +2136,13 @@ class Handler(BaseHTTPRequestHandler):
     def home_body(self) -> str:
         settings = get_settings()
         stock_rows = holdings()
+        diary_log_rows = diary_rows(8)
         holdings_html = "".join(
             "<tr>"
             f"<td><input form='edit-holding-{escape(row['id'])}' name='ticker' value='{escape(row['ticker'])}'></td>"
             f"<td><input form='edit-holding-{escape(row['id'])}' name='name' value='{escape(row['name'])}'></td>"
             f"<td><input form='edit-holding-{escape(row['id'])}' name='quantity' type='number' min='0' step='1' value='{escape(fmt_quantity(as_float(row['quantity'])).replace(',', ''))}'></td>"
             f"<td><input class='money-input' form='edit-holding-{escape(row['id'])}' name='avg_price' inputmode='decimal' value='{escape(fmt_input_money(row['avg_price']))}'></td>"
-            f"<td><input class='money-input' form='edit-holding-{escape(row['id'])}' name='current_price' inputmode='decimal' value='{escape(fmt_input_money(row['current_price']))}'></td>"
             f"<td><select form='edit-holding-{escape(row['id'])}' name='currency'>"
             f"<option {'selected' if row['currency'] == 'KRW' else ''}>KRW</option>"
             f"<option {'selected' if row['currency'] == 'USD' else ''}>USD</option>"
@@ -2022,7 +2160,31 @@ class Handler(BaseHTTPRequestHandler):
             "</td>"
             "</tr>"
             for row in stock_rows
-        ) or "<tr><td colspan='8'>아직 입력된 보유 종목이 없습니다.</td></tr>"
+        ) or "<tr><td colspan='7'>아직 입력된 보유 종목이 없습니다.</td></tr>"
+        diary_admin_html = "".join(
+            "<tr>"
+            f"<td>{escape(row['diary_date'])}</td>"
+            f"<td>{escape(row['name'])}<br><span class='muted'>{escape(row['ticker'])}</span></td>"
+            f"<td>{escape(row['suggestion'])}<br><span class='muted'>신뢰도 {escape(row['confidence'])}%</span></td>"
+            f"<td>{escape(row['user_action'] or '미기록')}</td>"
+            "<td>"
+            f"<form method='post' action='/diary-action'>"
+            f"<input type='hidden' name='diary_id' value='{escape(row['id'])}'>"
+            "<select name='user_action'>"
+            f"<option {'selected' if row['user_action'] == '보유' else ''}>보유</option>"
+            f"<option {'selected' if row['user_action'] == '매수' else ''}>매수</option>"
+            f"<option {'selected' if row['user_action'] == '매도' else ''}>매도</option>"
+            f"<option {'selected' if row['user_action'] == '비중축소' else ''}>비중축소</option>"
+            f"<option {'selected' if row['user_action'] == '미실행' else ''}>미실행</option>"
+            "</select>"
+            f"<input name='action_note' value='{escape(row['action_note'] or '')}' placeholder='예: 3주 매수, 관망'>"
+            "<button type='submit'>기록</button>"
+            "</form>"
+            "</td>"
+            f"<td>{escape(row['eval_1w'] or '1주 대기')}<br>{escape(row['eval_1m'] or '1개월 대기')}</td>"
+            "</tr>"
+            for row in diary_log_rows
+        ) or "<tr><td colspan='6'>리포트를 한 번 생성하면 AI 제안이 자동으로 기록됩니다.</td></tr>"
 
         return f"""
 <section class="notice">
@@ -2065,8 +2227,6 @@ class Handler(BaseHTTPRequestHandler):
       <input name="quantity" type="number" min="0" step="1" placeholder="예: 10">
       <label>평균단가</label>
       <input class="money-input" name="avg_price" inputmode="decimal" placeholder="예: 120.5">
-      <label>현재가</label>
-      <input class="money-input" name="current_price" inputmode="decimal" placeholder="선택 입력. 시세 연동 전에는 직접 입력">
       <label>통화</label>
       <select id="currency-input" name="currency">
         <option>KRW</option>
@@ -2082,7 +2242,7 @@ class Handler(BaseHTTPRequestHandler):
 <section>
   <h2>3. 이번 리포트에 포함될 종목</h2>
   <table>
-    <thead><tr><th>티커</th><th>종목명</th><th>수량</th><th>평균단가</th><th>현재가</th><th>통화</th><th>메모</th><th>관리</th></tr></thead>
+    <thead><tr><th>티커</th><th>종목명</th><th>수량</th><th>평균단가</th><th>통화</th><th>메모</th><th>관리</th></tr></thead>
     <tbody>{holdings_html}</tbody>
   </table>
   <form method="post" action="/clear-user-data">
@@ -2097,6 +2257,15 @@ class Handler(BaseHTTPRequestHandler):
     <button type="submit">리포트 이메일 발송</button>
     <a class="button secondary" href="/preview">리포트 미리보기</a>
   </form>
+</section>
+
+<section>
+  <h2>5. Digital Investment Diary</h2>
+  <p class="muted">리포트가 만든 AI 제안에 대해 실제 행동을 기록하면, 이후 1주/1개월 성과 평가가 누적됩니다.</p>
+  <table>
+    <thead><tr><th>날짜</th><th>종목</th><th>AI 제안</th><th>현재 행동</th><th>행동 기록</th><th>결과</th></tr></thead>
+    <tbody>{diary_admin_html}</tbody>
+  </table>
 </section>
 
 <section class="warning">
