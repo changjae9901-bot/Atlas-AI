@@ -1736,6 +1736,20 @@ def send_resend_email(
     sender: str,
     api_key: str,
 ) -> tuple[bool, str]:
+    api_key = api_key.strip()
+    sender = sender.strip()
+    if not api_key.startswith("re_") or any(ord(char) > 127 for char in api_key):
+        return (
+            False,
+            "Resend API Key가 올바르지 않습니다. Render 환경변수 RESEND_API_KEY에는 설명 문구가 아니라 "
+            "Resend에서 발급한 re_로 시작하는 실제 키를 입력해야 합니다.",
+        )
+    if "인증한 발송 주소" in sender or "yourdomain" in sender:
+        return (
+            False,
+            "RESEND_FROM 값이 예시 문구로 남아 있습니다. 테스트는 Atlas AI <onboarding@resend.dev>로 설정하거나, "
+            "Resend에서 인증한 도메인 주소를 입력해 주세요.",
+        )
     payload = json.dumps(
         {
             "from": sender,
