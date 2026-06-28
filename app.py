@@ -33,8 +33,23 @@ MARKET_CACHE_HOURS = int(os.getenv("MARKET_CACHE_HOURS", "20"))
 CLEAR_USER_DATA_AFTER_SUCCESS = os.getenv("CLEAR_USER_DATA_AFTER_SUCCESS", "1") != "0"
 
 
+def configure_data_paths(base_dir: Path) -> None:
+    global DATA_DIR, UPLOAD_DIR, LOCAL_TESSDATA_DIR, DB_PATH, PREVIEW_PATH
+    DATA_DIR = base_dir
+    UPLOAD_DIR = DATA_DIR / "uploads"
+    LOCAL_TESSDATA_DIR = DATA_DIR / "tessdata"
+    DB_PATH = DATA_DIR / "atlas_mailer.sqlite3"
+    PREVIEW_PATH = DATA_DIR / "email_preview.html"
+
+
 def ensure_storage() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fallback_dir = APP_DIR / "data"
+        print(f"Could not create ATLAS_DATA_DIR={DATA_DIR}: {exc}. Falling back to {fallback_dir}.")
+        configure_data_paths(fallback_dir)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     LOCAL_TESSDATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
