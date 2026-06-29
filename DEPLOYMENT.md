@@ -26,6 +26,7 @@
 
 - `RESEND_API_KEY`
 - `RESEND_FROM`
+- `RESEND_TEST_RECIPIENT`
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_USER`
@@ -72,6 +73,7 @@ Size: 1GB 이상
 ATLAS_DATA_DIR=/var/data
 RESEND_API_KEY=Resend API 키
 RESEND_FROM=Atlas AI <인증한 발송 주소>
+RESEND_TEST_RECIPIENT=Resend 계정 이메일
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=보내는 Gmail 주소
@@ -83,6 +85,15 @@ CLEAR_USER_DATA_AFTER_SUCCESS=1
 ```
 
 Gmail 앱 비밀번호를 쓰지 않으려면 `RESEND_API_KEY`와 `RESEND_FROM`만 설정해도 됩니다. Resend 설정이 있으면 앱은 SMTP보다 Resend API 발송을 먼저 사용합니다.
+
+도메인 인증 전 테스트 단계에서는 다음처럼 설정합니다.
+
+```text
+RESEND_FROM=Atlas AI <onboarding@resend.dev>
+RESEND_TEST_RECIPIENT=Resend 계정 이메일
+```
+
+이 경우 사용자 화면에는 테스트 발송 모드 안내가 표시되며, `RESEND_TEST_RECIPIENT`로 지정한 이메일만 발송 가능합니다. 다른 사용자 이메일로 발송하려면 Resend 도메인 인증 후 `RESEND_FROM`을 `Atlas AI <report@인증도메인>` 형태로 바꿉니다.
 
 사용자 화면에는 운영자 설정 입력칸을 노출하지 않습니다. `/api-settings` 같은 운영자 경로는 `ADMIN_TOKEN`이 있을 때만 접근할 수 있습니다.
 

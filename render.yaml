@@ -13,6 +13,8 @@ services:
         sync: false
       - key: RESEND_FROM
         sync: false
+      - key: RESEND_TEST_RECIPIENT
+        sync: false
       - key: ADMIN_TOKEN
         sync: false
       - key: CLEAR_USER_DATA_AFTER_SUCCESS

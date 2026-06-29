@@ -191,6 +191,7 @@ def get_settings() -> dict[str, str]:
         "smtp_from": os.getenv("SMTP_FROM") or get_setting("smtp_from", ""),
         "resend_api_key": os.getenv("RESEND_API_KEY") or get_setting("resend_api_key", ""),
         "resend_from": os.getenv("RESEND_FROM") or get_setting("resend_from", ""),
+        "resend_test_recipient": os.getenv("RESEND_TEST_RECIPIENT") or get_setting("resend_test_recipient", ""),
         "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY") or get_setting("alpha_vantage_key", ""),
     }
 
@@ -1781,6 +1782,11 @@ def send_resend_email(
             error_message = parsed_error.get("message") or parsed_error.get("error") or error_body
         except json.JSONDecodeError:
             error_message = error_body or str(exc)
+        if "only send testing emails to your own email address" in error_message:
+            error_message = (
+                f"{error_message} / Resend 테스트 발송 제한입니다. 테스트하려면 수신 이메일을 Resend 계정 이메일로 바꾸거나, "
+                "resend.com/domains에서 도메인을 인증한 뒤 RESEND_FROM을 해당 도메인 주소로 변경해야 합니다."
+            )
         if "1010" in error_message:
             error_message = (
                 f"{error_message} / 요청이 Resend 보안 정책에서 차단됐을 가능성이 큽니다. "
@@ -1792,11 +1798,16 @@ def send_resend_email(
         return False, f"Resend 발송 오류: {exc}"
 
 
+def is_resend_test_mode(sender: str) -> bool:
+    return "onboarding@resend.dev" in sender.lower()
+
+
 def send_email(subject: str, html_body: str) -> tuple[bool, str]:
     settings = get_settings()
     recipient = settings["recipient_email"]
     resend_api_key = settings["resend_api_key"]
     resend_from = settings["resend_from"]
+    resend_test_recipient = settings["resend_test_recipient"]
     smtp_host = settings["smtp_host"]
     smtp_port = int(settings["smtp_port"] or "587")
     smtp_user = settings["smtp_user"]
@@ -1808,6 +1819,13 @@ def send_email(subject: str, html_body: str) -> tuple[bool, str]:
     if not recipient:
         return False, "수신 이메일이 등록되지 않았습니다. 미리보기 파일만 저장했습니다."
     if resend_api_key and resend_from:
+        if is_resend_test_mode(resend_from) and resend_test_recipient:
+            if recipient.strip().lower() != resend_test_recipient.strip().lower():
+                return (
+                    False,
+                    f"현재는 Resend 테스트 발송 모드입니다. 도메인 인증 전에는 {resend_test_recipient} 주소로만 테스트 발송할 수 있습니다. "
+                    "다른 사용자 이메일 발송은 Resend 도메인 인증 후 가능합니다.",
+                )
         return send_resend_email(subject, html_body, recipient, resend_from, resend_api_key)
     if not smtp_host or not smtp_user or not smtp_password or not smtp_from:
         return False, "메일 발송 설정이 없어 실제 발송하지 않고 미리보기 파일만 저장했습니다. Resend API 키 또는 SMTP 설정을 추가해 주세요."
@@ -2151,6 +2169,16 @@ class Handler(BaseHTTPRequestHandler):
         settings = get_settings()
         stock_rows = holdings()
         diary_log_rows = diary_rows(8)
+        mail_notice_html = ""
+        if is_resend_test_mode(settings["resend_from"]):
+            allowed = settings["resend_test_recipient"] or "Resend 계정 이메일"
+            mail_notice_html = (
+                "<div class='warning'>"
+                "<strong>테스트 발송 모드</strong>"
+                f"<p>현재는 도메인 인증 전이라 <strong>{escape(allowed)}</strong> 주소로만 메일 발송 테스트가 가능합니다. "
+                "다른 사용자 이메일 발송은 Resend 도메인 인증 후 열립니다.</p>"
+                "</div>"
+            )
         holdings_html = "".join(
             "<tr>"
             f"<td><input form='edit-holding-{escape(row['id'])}' name='ticker' value='{escape(row['ticker'])}'></td>"
@@ -2219,6 +2247,7 @@ class Handler(BaseHTTPRequestHandler):
       <input name="user_name" value="{escape(settings['user_name'])}" placeholder="예: 김OO">
       <label>수신 이메일</label>
       <input name="recipient_email" type="email" value="{escape(settings['recipient_email'])}" placeholder="example@email.com">
+      {mail_notice_html}
       <label>매일 발송 시간</label>
       <input name="send_time" type="time" value="{escape(settings['send_time'])}">
       <label>보유 현금 (KRW)</label>
